@@ -1,3 +1,9 @@
+/** A table of contents entry; `spine` is the file it starts in, in reading order. */
+export type Chapter = { title: string; spine: number };
+
+/** Where the reader is: a file in reading order and how far through it, from 0 to 1. */
+export type Position = { spine: number; fraction: number };
+
 export type Book = {
   /** calibre's uuid for the book. */
   id: string;
@@ -5,14 +11,23 @@ export type Book = {
   authors: readonly string[];
   series: string | null;
   seriesIndex: number | null;
-  chapters: readonly string[];
+  /** The EPUB on the phone. */
+  file: string;
+  chapters: readonly Chapter[];
   /** Index into `chapters` of the chapter being read. */
   chapter: number;
+  position: Position;
   /** How far through the book, from 0 to 1. */
   progress: number;
   addedAt: number;
   lastReadAt: number | null;
 };
+
+/** A book found in the books folder. */
+export type ScannedBook = Pick<
+  Book,
+  "id" | "title" | "authors" | "series" | "seriesIndex" | "file" | "chapters"
+>;
 
 export type Library = { books: Readonly<Record<string, Book>> };
 
@@ -76,4 +91,56 @@ export function chapterProgress(book: Book) {
 
 /** Chapters numbered from 1. */
 export const chapterRows = (book: Book) =>
-  book.chapters.map((title, index) => ({ number: index + 1, title }));
+  book.chapters.map((chapter, index) => ({ number: index + 1, index, title: chapter.title }));
+
+/** The last chapter that starts at or before a file in the reading order. */
+export function chapterAt(chapters: readonly Chapter[], spine: number) {
+  let found = 0;
+  chapters.forEach((chapter, index) => {
+    if (chapter.spine <= spine) found = index;
+  });
+  return found;
+}
+
+/**
+ * Makes the library match the books folder: new files are added, known books get fresh metadata
+ * and keep their reading state, and books whose files are gone are removed.
+ */
+export function syncScanned(
+  library: Library,
+  scanned: readonly ScannedBook[],
+  now: number,
+): Library {
+  const books: Record<string, Book> = {};
+  for (const found of scanned) {
+    const known = library.books[found.id];
+    const book: Book = known
+      ? { ...known, ...found }
+      : {
+          ...found,
+          chapter: 0,
+          position: { spine: 0, fraction: 0 },
+          progress: 0,
+          addedAt: now,
+          lastReadAt: null,
+        };
+    books[found.id] = { ...book, chapter: chapterAt(book.chapters, book.position.spine) };
+  }
+  return { books };
+}
+
+/** Saves where the reader stopped. */
+export function recordPosition(
+  library: Library,
+  id: string,
+  position: Position,
+  progress: number,
+  now: number,
+): Library {
+  const book = library.books[id];
+  if (!book) return library;
+  const chapter = chapterAt(book.chapters, position.spine);
+  return {
+    books: { ...library.books, [id]: { ...book, position, progress, chapter, lastReadAt: now } },
+  };
+}
