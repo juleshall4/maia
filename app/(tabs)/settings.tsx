@@ -1,4 +1,4 @@
-import { Field, Screen, Section, useSnapshot } from "ink";
+import { Field, Screen, Section, Toggle, useSnapshot } from "ink";
 import {
   fonts,
   labelOf,
@@ -36,6 +36,15 @@ export default function Settings() {
         <Field label="Page turns" href="/page-turns">
           {labelOf(pageTurnModes, current.pageTurns)}
         </Field>
+      </Section>
+      <Section title="Keyboard">
+        <Toggle
+          label="Keyboard light"
+          value={current.keyboardLight}
+          onChange={(keyboardLight) =>
+            void settings.update((value) => ({ ...value, keyboardLight }))
+          }
+        />
       </Section>
     </Screen>
   );

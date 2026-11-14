@@ -45,7 +45,7 @@ internal class Epub(
         .put("series", series ?: JSONObject.NULL)
         .put("seriesIndex", seriesIndex ?: JSONObject.NULL)
         .put("file", file.absolutePath)
-        .put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("spine", it.spine) }))
+        .put("chapters", JSONArray(chapters.map { JSONObject().put("title", it.title).put("spine", it.spine).put("anchor", it.anchor) }))
 
     companion object {
         fun read(zip: ZipFile, fallbackId: String): Epub {

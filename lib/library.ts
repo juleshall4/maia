@@ -2,7 +2,11 @@ import { createStore } from "@ink/store";
 import * as v from "valibot";
 import { emptyLibrary, type Library } from "./library-model";
 
-export const chapterSchema = v.object({ title: v.string(), spine: v.number() });
+export const chapterSchema = v.object({
+  title: v.string(),
+  spine: v.number(),
+  anchor: v.optional(v.string()),
+});
 
 const bookSchema = v.object({
   id: v.string(),

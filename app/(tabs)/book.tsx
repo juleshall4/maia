@@ -1,4 +1,4 @@
-import { Screen, Section, Stack, Text, useAction, useRouteParams, useSnapshot } from "ink";
+import { Row, Screen, Section, Stack, Text, useAction, useRouteParams, useSnapshot } from "ink";
 import { library } from "../../lib/library";
 import { chapterRows } from "../../lib/library-model";
 import { read } from "../../lib/reader";
@@ -14,6 +14,8 @@ export default function Book() {
   return (
     <Screen title={book.title}>
       {open.status === "error" && <Text>{open.error.message}</Text>}
+      {/* Books without a table of contents still need a way in. */}
+      {count === 0 && <Row title="Read" onPress={() => open.run(book)} />}
       {count > 0 && (
         <Section title={`${count} ${count === 1 ? "chapter" : "chapters"}`}>
           {chapterRows(book).map(({ number, index, title }) => {

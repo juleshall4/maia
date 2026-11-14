@@ -1,5 +1,8 @@
-/** A table of contents entry; `spine` is the file it starts in, in reading order. */
-export type Chapter = { title: string; spine: number };
+/**
+ * A table of contents entry; `spine` is the file it starts in, in reading order, and `anchor` the
+ * element it starts at when several chapters share a file.
+ */
+export type Chapter = { title: string; spine: number; anchor?: string };
 
 /** Where the reader is: a file in reading order and how far through it, from 0 to 1. */
 export type Position = { spine: number; fraction: number };

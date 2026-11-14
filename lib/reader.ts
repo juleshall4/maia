@@ -26,6 +26,7 @@ export async function read(book: Book, from: From = { kind: "saved" }) {
     title: book.title,
     spine: position.spine,
     fraction: position.fraction,
+    anchor: chapter?.anchor,
     settings: await settings.get(),
   });
 }

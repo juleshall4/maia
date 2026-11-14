@@ -9,7 +9,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.util.Log
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
@@ -28,6 +30,12 @@ import java.util.zip.ZipFile
 private const val TAG = "uniread"
 private const val HOST = "book.uniread"
 private const val BASE = "https://$HOST/"
+/** The Titan keyboard's touch surface, as Android names its input device. */
+private const val KEYBOARD_TOUCHPAD = "touchPad"
+/** How far a keyboard swipe must travel to turn a page, in touchpad units (the pad is 1080 wide). */
+private const val SWIPE_DISTANCE = 150f
+/** One swipe can arrive as motion and as keys; turns closer together than this are the same swipe. */
+private const val SWIPE_GAP_MS = 400L
 
 /** Lists the EPUBs in the app's books folder. */
 internal class BooksAdapter(private val activity: MainActivity) : NativeAdapter {
@@ -280,12 +288,68 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         windowCallback = callback
         window.callback = object : Window.Callback by callback {
             override fun dispatchKeyEvent(event: KeyEvent) = onKey(event) || callback.dispatchKeyEvent(event)
+            override fun dispatchGenericMotionEvent(event: MotionEvent) = onKeyboardTouch(event) || callback.dispatchGenericMotionEvent(event)
+            override fun dispatchTouchEvent(event: MotionEvent) = onKeyboardTouch(event) || callback.dispatchTouchEvent(event)
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         activity.onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, backCallback)
     }
 
+    private var swipeStart: Pair<Float, Float>? = null
+    private var lastSwipe = 0L
+
+    /**
+     * A sideways swipe on the keyboard turns the page: swipe left for the next page, right for the previous one,
+     * as on the screen. Depending on the phone's Scroll assistant mode, the keyboard's touchpad reaches the app
+     * as touchpad motion, as screen touches from its own device (which must not reach the page as taps), as
+     * sideways scrolling, or as arrow keys alongside the motion. One swipe can arrive several ways, so all of
+     * them share one page turn.
+     */
+    private fun onKeyboardTouch(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+            val sideways = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            if (sideways == 0f) return false
+            swipe(if (sideways > 0) "next" else "previous")
+            return true
+        }
+        if (!isKeyboard(event)) return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> swipeStart = event.x to event.y
+            MotionEvent.ACTION_UP -> {
+                val (x, y) = swipeStart ?: return true
+                swipeStart = null
+                val dx = event.x - x
+                val dy = event.y - y
+                if (kotlin.math.abs(dx) >= SWIPE_DISTANCE && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                    swipe(if (dx < 0) "next" else "previous")
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> swipeStart = null
+        }
+        return true
+    }
+
+    private fun swipe(command: String) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (now - lastSwipe < SWIPE_GAP_MS) return
+        lastSwipe = now
+        webView?.evaluateJavascript("window.uniread && window.uniread.$command()", null)
+    }
+
+    /** Arrow keys the firmware sends for a keyboard swipe, in the direction the finger moved. */
+    private fun onSwipeKey(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT -> swipe("next")
+            KeyEvent.KEYCODE_DPAD_RIGHT -> swipe("previous")
+        }
+        return true
+    }
+
+    private fun isKeyboard(event: MotionEvent) =
+        event.isFromSource(InputDevice.SOURCE_TOUCHPAD) || event.device?.name == KEYBOARD_TOUCHPAD
+
     private fun onKey(event: KeyEvent): Boolean {
+        if (event.device?.name == KEYBOARD_TOUCHPAD) return onSwipeKey(event)
         val command = when (event.keyCode) {
             KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN,
             KeyEvent.KEYCODE_PAGE_DOWN, KeyEvent.KEYCODE_ENTER -> "next"

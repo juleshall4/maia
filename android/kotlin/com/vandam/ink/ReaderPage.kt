@@ -102,7 +102,31 @@ internal const val READER_SCRIPT = """
   }
 
   document.addEventListener("DOMContentLoaded", function () {
+    // A sideways swipe on the screen turns the page too; the tap that ends it must not turn another.
+    var touchStart = null;
+    var swiped = false;
+    document.addEventListener("touchstart", function (event) {
+      var touch = event.touches[0];
+      touchStart = { x: touch.clientX, y: touch.clientY };
+      swiped = false;
+    }, { passive: true });
+    document.addEventListener("touchend", function (event) {
+      if (!touchStart) return;
+      var touch = event.changedTouches[0];
+      var dx = touch.clientX - touchStart.x;
+      var dy = touch.clientY - touchStart.y;
+      touchStart = null;
+      if (!config.taps || Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      swiped = true;
+      if (dx < 0) next();
+      else previous();
+    });
     document.addEventListener("click", function (event) {
+      if (swiped) {
+        swiped = false;
+        event.preventDefault();
+        return;
+      }
       if (event.target.closest && event.target.closest("a[href]")) return;
       event.preventDefault();
       if (!config.taps) return;
