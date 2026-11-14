@@ -1,10 +1,12 @@
-import { Row, Screen, Section, useSnapshot } from "ink";
+import { Row, Screen, Section, Text, useAction, useSnapshot } from "ink";
 import { library } from "../../lib/library";
 import { chapterProgress, continueReading, readingState, recents } from "../../lib/library-model";
+import { read } from "../../lib/reader";
 import { openBook } from "../../lib/routes";
 
 export default function Home() {
   const snapshot = useSnapshot(library);
+  const resume = useAction(read);
   if (snapshot.status !== "ready") return <Screen title="uniread" />;
   const next = continueReading(snapshot.data);
   const others = recents(snapshot.data);
@@ -16,8 +18,9 @@ export default function Home() {
             title={next.title}
             titleMaxLines={2}
             subtitle={chapterProgress(next)}
-            onPress={() => openBook(next.id)}
+            onPress={() => resume.run(next)}
           />
+          {resume.status === "error" && <Text>{resume.error.message}</Text>}
         </Section>
       )}
       {others.length > 0 && (

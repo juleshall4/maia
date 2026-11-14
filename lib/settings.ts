@@ -36,15 +36,34 @@ export type Settings = {
   connectAutomatically: boolean;
   sendProgress: boolean;
   shelvesFromTags: boolean;
+  /** Off keeps the keyboard light off while uniread is open, and until the screen next turns on. */
+  keyboardLight: boolean;
 };
 
 const values = <T extends readonly { value: string }[]>(options: T) =>
   // SAFETY: every options list above is a non-empty const tuple, so its values are a non-empty list of its value literals.
   v.picklist(options.map((option) => option.value) as [Value<T>, ...Value<T>[]]);
 
+/** The settings saved before the keyboard light setting. */
+const version1 = v.object({
+  font: values(fonts),
+  textSize: values(textSizes),
+  lineSpacing: values(lineSpacings),
+  margins: values(marginSizes),
+  pageTurns: values(pageTurnModes),
+  connectAutomatically: v.boolean(),
+  sendProgress: v.boolean(),
+  shelvesFromTags: v.boolean(),
+});
+
 export const settings = createStore<Settings>({
   key: "uniread.settings",
-  version: 1,
+  version: 2,
+  // Version 2 added the keyboard light setting.
+  migrate: (old, oldVersion) => {
+    if (oldVersion === 1) return { ...v.parse(version1, old), keyboardLight: true };
+    throw new Error("Unsupported settings version");
+  },
   initial: {
     font: "literata",
     textSize: "medium",
@@ -54,19 +73,9 @@ export const settings = createStore<Settings>({
     connectAutomatically: true,
     sendProgress: true,
     shelvesFromTags: false,
+    keyboardLight: true,
   },
-  decode: v.parser(
-    v.object({
-      font: values(fonts),
-      textSize: values(textSizes),
-      lineSpacing: values(lineSpacings),
-      margins: values(marginSizes),
-      pageTurns: values(pageTurnModes),
-      connectAutomatically: v.boolean(),
-      sendProgress: v.boolean(),
-      shelvesFromTags: v.boolean(),
-    }),
-  ),
+  decode: v.parser(v.object({ ...version1.entries, keyboardLight: v.boolean() })),
 });
 
 export const labelOf = (options: readonly { value: string; label: string }[], value: string) =>
