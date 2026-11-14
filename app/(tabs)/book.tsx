@@ -1,6 +1,6 @@
 import { Screen, Section, Stack, Text, useRouteParams, useSnapshot } from "ink";
 import { library } from "../../lib/library";
-import { chapterRows, readingState } from "../../lib/library-model";
+import { chapterRows } from "../../lib/library-model";
 import { decodeBookParams } from "../../lib/routes";
 
 export default function Book() {
@@ -10,7 +10,7 @@ export default function Book() {
   if (!book) return <Screen />;
   const count = book.chapters.length;
   return (
-    <Screen title={book.title} subtitle={`${book.authors.join(", ")} · ${readingState(book)}`}>
+    <Screen title={book.title}>
       {count > 0 && (
         <Section title={`${count} ${count === 1 ? "chapter" : "chapters"}`}>
           {chapterRows(book).map(({ number, title }) => {

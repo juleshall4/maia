@@ -9,10 +9,7 @@ const set = (key: Switch) => (value: boolean) =>
 export default function Calibre() {
   const snapshot = useSnapshot(settings);
   return (
-    <Screen
-      title="Calibre"
-      subtitle="In calibre, choose Connect/share, then Start wireless device connection."
-    >
+    <Screen title="Calibre">
       <Section title="Connection">
         <Field label="Status">Not connected</Field>
       </Section>
