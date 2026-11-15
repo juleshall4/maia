@@ -31,7 +31,7 @@ export async function read(book: Book, from: From = { kind: "saved" }) {
   });
 }
 
-onNativeMessage("uniread.reader", (message) => {
+onNativeMessage("maia.reader", (message) => {
   const event = v.safeParse(eventSchema, message);
   const id = reading;
   if (!event.success || id === null) return;

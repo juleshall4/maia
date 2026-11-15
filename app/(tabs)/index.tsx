@@ -7,11 +7,11 @@ import { openBook } from "../../lib/routes";
 export default function Home() {
   const snapshot = useSnapshot(library);
   const resume = useAction(read);
-  if (snapshot.status !== "ready") return <Screen title="uniread" />;
+  if (snapshot.status !== "ready") return <Screen title="maia" />;
   const next = continueReading(snapshot.data);
   const others = recents(snapshot.data);
   return (
-    <Screen title="uniread">
+    <Screen title="maia">
       {next && (
         <Section title="Continue">
           <Row

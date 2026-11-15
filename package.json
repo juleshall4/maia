@@ -9,7 +9,7 @@
     "@types/react": "19.2.18",
     "typescript": "5.9.3"
   },
-  "name": "dev-uniread",
+  "name": "dev-maia",
   "overrides": {
     "@ink/files": "file:/Users/julian/Developer/ink/packages/files",
     "@ink/lightos": "file:/Users/julian/Developer/ink/packages/lightos",
