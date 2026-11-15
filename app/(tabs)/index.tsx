@@ -1,14 +1,19 @@
 import { Row, Screen, Section, Text, useAction, useSnapshot } from "ink";
+import { useEffect } from "react";
 import { library } from "../../lib/library";
 import { chapterProgress, continueReading, readingState, recents } from "../../lib/library-model";
-import { read } from "../../lib/reader";
+import { prepare, read } from "../../lib/reader";
 import { openBook } from "../../lib/routes";
 
 export default function Home() {
   const snapshot = useSnapshot(library);
   const resume = useAction(read);
+  const next = snapshot.status === "ready" ? continueReading(snapshot.data) : null;
+  // Continue is the likeliest next tap, so have the book laid out behind the app by then.
+  useEffect(() => {
+    if (next) prepare(next).catch(() => {});
+  }, [next]);
   if (snapshot.status !== "ready") return <Screen title="maia" />;
-  const next = continueReading(snapshot.data);
   const others = recents(snapshot.data);
   return (
     <Screen title="maia">

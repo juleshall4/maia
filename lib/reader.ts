@@ -17,18 +17,34 @@ type From = { kind: "saved" } | { kind: "chapter"; index: number };
 let reading: string | null = null;
 let saving: Promise<void> = Promise.resolve();
 
-export async function read(book: Book, from: From = { kind: "saved" }) {
+/** What the reader needs to show a book at a place. */
+async function request(book: Book, from: From) {
   const chapter = from.kind === "chapter" ? book.chapters[from.index] : undefined;
   const position = chapter ? { spine: chapter.spine, fraction: 0 } : book.position;
-  reading = book.id;
-  await callNative("reader", "open", {
+  return {
     file: book.file,
     title: book.title,
     spine: position.spine,
     fraction: position.fraction,
     anchor: chapter?.anchor,
     settings: await settings.get(),
-  });
+  };
+}
+
+export async function read(book: Book, from: From = { kind: "saved" }) {
+  reading = book.id;
+  try {
+    await callNative("reader", "open", await request(book, from));
+  } catch (error) {
+    reading = null;
+    throw error;
+  }
+}
+
+/** Lays out the book where it was left, behind the app, so opening it there is instant. */
+export async function prepare(book: Book) {
+  if (reading !== null) return;
+  await callNative("reader", "prepare", await request(book, { kind: "saved" }));
 }
 
 onNativeMessage("maia.reader", (message) => {

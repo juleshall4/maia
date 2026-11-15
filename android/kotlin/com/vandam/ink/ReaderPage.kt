@@ -36,6 +36,8 @@ internal const val READER_SCRIPT = """
   var bridge = window.MaiaReader;
   if (!bridge) return;
   var config = JSON.parse(bridge.config());
+  // A replaced document can still call the bridge while its WebView starts the next load.
+  config.generation = Number(new URL(window.location.href).searchParams.get("g"));
   var page = 0;
   var pages = 1;
   var words = 0;
@@ -142,7 +144,7 @@ internal const val READER_SCRIPT = """
   // Wait for fonts and images so the page count is right.
   window.addEventListener("load", function () {
     (document.fonts ? document.fonts.ready : Promise.resolve()).then(function () {
-      requestAnimationFrame(function () { requestAnimationFrame(start); });
+      start();
     });
   });
   window.addEventListener("resize", function () {

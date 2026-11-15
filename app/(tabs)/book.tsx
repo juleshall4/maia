@@ -1,7 +1,8 @@
 import { Row, Screen, Section, Stack, Text, useAction, useRouteParams, useSnapshot } from "ink";
+import { useEffect } from "react";
 import { library } from "../../lib/library";
 import { chapterRows } from "../../lib/library-model";
-import { read } from "../../lib/reader";
+import { prepare, read } from "../../lib/reader";
 import { decodeBookParams } from "../../lib/routes";
 
 export default function Book() {
@@ -9,6 +10,10 @@ export default function Book() {
   const snapshot = useSnapshot(library);
   const open = useAction(read);
   const book = snapshot.status === "ready" ? snapshot.data.books[id] : undefined;
+  // The current chapter carries on where reading stopped, so have that place laid out before it is tapped.
+  useEffect(() => {
+    if (book) prepare(book).catch(() => {});
+  }, [book]);
   if (!book) return <Screen />;
   const count = book.chapters.length;
   return (
