@@ -80,6 +80,10 @@ internal const val READER_SCRIPT = """
     else if (config.fraction) target = Math.floor(config.fraction * pages + 0.001);
     show(target);
     document.body.style.visibility = "visible";
+    // Two frames later the page has been painted, so it can be brought to the top without a blank frame.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { bridge.ready(config.generation); });
+    });
   }
 
   function next() {
