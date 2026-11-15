@@ -14,6 +14,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.os.Looper
+import kotlin.math.floor
 import android.view.Window
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -82,18 +84,19 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         var spine = -1
         /** Laid out, shown at its starting page and painted. */
         var ready = false
+        /** The page it was showing when it became ready, to tell whether it has moved since. */
+        var startPage = 0
         var page = 0
         var pages = 1
         var minutesLeft = 0
 
         val fraction get() = if (pages <= 1) 0.0 else page.toDouble() / pages
 
-        /** Whether this slot holds file [index] at [from], or is loading it. */
-        fun holds(index: Int, from: Any) = spine == index && when {
-            !ready -> start == from
-            from == 0.0 -> page == 0
-            from == "end" -> page == pages - 1
-            else -> false
+        /** Whether this slot shows file [index] at [from], or is loading it. A fraction is placed as the page script places it. */
+        fun holds(index: Int, from: Any) = spine == index && if (!ready) start == from else when (from) {
+            "end" -> page == pages - 1
+            is Double -> page == floor(from * pages + 0.001).toInt().coerceIn(0, pages - 1)
+            else -> start == from && page == startPage
         }
     }
 
@@ -106,6 +109,13 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     private var page: FrameLayout? = null
     private var footer: View? = null
     private var timeLeft: TextView? = null
+    private var titleView: TextView? = null
+    /** Whether the reader is open. Closed, it waits behind the Ink view with its pages still laid out. */
+    private var attached = false
+    /** The file and modification time the open book was read from, so reopening it needn't read it again. */
+    private var bookKey: String? = null
+    /** The page turn settings the slots' pages were loaded with. */
+    private var loadedTurns: String? = null
     private var zip: ZipFile? = null
     private var book: Epub? = null
     private var windowCallback: Window.Callback? = null
@@ -120,62 +130,180 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     /** Holds the keyboard light off while reading, if Settings asks for that. */
     private var keyboardDark: KeyboardDark? = null
 
+    // Only the newest request may change the hidden reader; a late prepare must never replace an open book.
+    private var requestGeneration = 0
+    private var opening = false
+
     override fun execute(requestId: Long, operation: String, payload: String, complete: NativeResultHandler) {
-        fun fail(error: Exception) {
-            Log.w(TAG, "reader $operation failed", error)
-            complete(NativeResult.Failure(NativeErrorKind.PROTOCOL, error.message ?: "The book could not be opened", false))
-        }
-        when (operation) {
-            // The book is read off the main thread, so the library stays smooth while it opens.
-            "open" -> Thread {
-                val request = JSONObject(payload)
-                val file = File(request.getString("file"))
-                val opened = try {
-                    val archive = ZipFile(file)
-                    try {
-                        archive to Epub.read(archive, file.nameWithoutExtension)
-                    } catch (error: Exception) {
-                        archive.close()
-                        throw error
-                    }
-                } catch (error: Exception) {
-                    activity.runOnUiThread { fail(error) }
-                    return@Thread
-                }
-                activity.runOnUiThread {
-                    try {
-                        open(request, opened.first, opened.second)
-                        complete(NativeResult.Success("null"))
-                    } catch (error: Exception) {
-                        opened.first.close()
-                        fail(error)
-                    }
-                }
-            }.start()
-            "close" -> activity.runOnUiThread {
-                close()
-                complete(NativeResult.Success("null"))
+        activity.runOnUiThread {
+            fun done() = complete(NativeResult.Success("null"))
+            fun fail(error: Exception) {
+                opening = false
+                Log.w(TAG, "reader $operation failed", error)
+                complete(NativeResult.Failure(NativeErrorKind.PROTOCOL, error.message ?: "The book could not be opened", false))
             }
-            else -> complete(NativeResult.Failure(NativeErrorKind.PROTOCOL, "Unknown reader operation $operation", false))
+            when (operation) {
+                "open", "prepare" -> {
+                    if (operation == "prepare" && (attached || opening)) {
+                        done()
+                        return@runOnUiThread
+                    }
+                    val request = try { JSONObject(payload) } catch (error: Exception) {
+                        fail(error)
+                        return@runOnUiThread
+                    }
+                    val file = try { File(request.getString("file")) } catch (error: Exception) {
+                        fail(error)
+                        return@runOnUiThread
+                    }
+                    val key = file.path + ":" + file.lastModified() + ":" + file.length()
+                    val generation = ++requestGeneration
+                    opening = operation == "open"
+                    fun finish(opened: Pair<ZipFile, Epub>?) {
+                        if (generation != requestGeneration || activity.isDestroyed) {
+                            opened?.first?.close()
+                            done()
+                            return
+                        }
+                        try {
+                            setBook(request, key, opened)
+                            place(request)
+                            if (operation == "open") reveal()
+                            opening = false
+                            done()
+                        } catch (error: Exception) {
+                            if (opened?.first !== zip) opened?.first?.close()
+                            fail(error)
+                        }
+                    }
+                    if (key == bookKey) {
+                        finish(null)
+                    } else {
+                        Thread {
+                            val opened = try {
+                                val archive = ZipFile(file)
+                                try {
+                                    archive to Epub.read(archive, file.nameWithoutExtension)
+                                } catch (error: Exception) {
+                                    archive.close()
+                                    throw error
+                                }
+                            } catch (error: Exception) {
+                                activity.runOnUiThread {
+                                    if (generation == requestGeneration) fail(error) else done()
+                                }
+                                return@Thread
+                            }
+                            activity.runOnUiThread { finish(opened) }
+                        }.start()
+                    }
+                }
+                "close" -> {
+                    close()
+                    done()
+                }
+                else -> complete(NativeResult.Failure(NativeErrorKind.PROTOCOL, "Unknown reader operation $operation", false))
+            }
         }
     }
 
     override fun cancel(requestId: Long) = Unit
 
-    private fun open(request: JSONObject, archive: ZipFile, epub: Epub) {
-        close()
-        zip = archive
-        book = epub
+    init {
+        // The first WebView starts Chromium, which takes a while, so make the reader as soon as the app is idle.
+        activity.runOnUiThread {
+            activity.findViewById<View>(android.R.id.content).postOnAnimation {
+                Looper.myQueue().addIdleHandler {
+                    if (!activity.isDestroyed) ensurePage()
+                    false
+                }
+            }
+        }
+    }
+
+    /** Switches to the book [opened] from the file at [key], or keeps the open one, and takes the request's settings. */
+    private fun setBook(request: JSONObject, key: String, opened: Pair<ZipFile, Epub>?) {
+        ensurePage()
+        if (opened != null) {
+            zip?.close()
+            zip = opened.first
+            book = opened.second
+            bookKey = key
+            clearSlots()
+        }
         options = request
-        styles = readerStyles()
-        attach()
-        createPage()
-        val first = slots[0]
-        current = first
-        spine = request.optInt("spine", 0).coerceIn(0, epub.spine.lastIndex)
-        val anchor = request.optString("anchor").ifEmpty { null }
-        load(first, spine, anchor ?: request.optDouble("fraction", 0.0))
-        first.view.requestFocus()
+        titleView?.text = request.optString("title")
+        val newStyles = readerStyles()
+        val turns = pageTurns?.toString()
+        if (newStyles != styles || turns != loadedTurns) clearSlots()
+        styles = newStyles
+        loadedTurns = turns
+    }
+
+    /** Forgets what the slots hold, so they load again with the current book and settings. */
+    private fun clearSlots() {
+        slots.forEach {
+            it.spine = -1
+            it.ready = false
+            it.generation = ++generations
+        }
+        current = null
+        pending = null
+    }
+
+    /** Puts the request's place in the book on the top slot, loading it unless a slot already shows it. */
+    private fun place(request: JSONObject) {
+        val epub = book ?: return
+        val index = request.optInt("spine", 0).coerceIn(0, epub.spine.lastIndex)
+        spine = index
+        fraction = request.optDouble("fraction", 0.0)
+        finished = false
+        val from: Any = request.optString("anchor").ifEmpty { null } ?: request.optDouble("fraction", 0.0)
+        pending = null
+        val held = slots.firstOrNull { it.holds(index, from) }
+        if (held != null) {
+            if (held.ready) show(held) else raise(held)
+            return
+        }
+        val top = current
+        val spare = slots.minBy { (if (it === top) 2 else 0) + (if (it.spine == index - 1 || it.spine == index + 1) 1 else 0) }
+        load(spare, index, from)
+        raise(spare)
+    }
+
+    /** Makes [slot] the top slot, with the footer above it. */
+    private fun raise(slot: Slot) {
+        current = slot
+        slot.view.bringToFront()
+        footer?.bringToFront()
+        page?.invalidate()
+    }
+
+    /** Opens the reader over the Ink view: at once if the top slot is painted, or as soon as it is. */
+    private fun reveal() {
+        if (!attached) {
+            attach()
+            attached = true
+        }
+        val top = current ?: return
+        page?.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+        top.view.requestFocus()
+        if (top.ready) {
+            bringPageForward()
+            show(top)
+        }
+    }
+
+    private fun bringPageForward() {
+        page?.bringToFront()
+    }
+
+    /** Puts the reader behind the Ink view, without detaching it, so its pages stay laid out and painted. */
+    private fun sendPageBack() {
+        val container = page ?: return
+        val content = container.parent as? ViewGroup ?: return
+        (0 until content.childCount).map { content.getChildAt(it) }.filter { it !== container }.forEach { it.bringToFront() }
+        content.invalidate()
     }
 
     private fun load(slot: Slot, index: Int, from: Any) {
@@ -213,11 +341,8 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     private fun show(slot: Slot) {
         val epub = book ?: return
         pending = null
-        current = slot
-        slot.view.bringToFront()
-        footer?.bringToFront()
-        page?.invalidate()
-        slot.view.requestFocus()
+        raise(slot)
+        if (attached) slot.view.requestFocus()
         spine = slot.spine
         report(slot)
         val behind = slots.filter { it !== slot }.toMutableList()
@@ -236,6 +361,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     /** Shows the slot on top's place in the footer and saves it. */
     private fun report(slot: Slot) {
         val epub = book ?: return
+        if (!attached) return
         timeLeft?.text = if (slot.minutesLeft > 0) "${slot.minutesLeft} min left in chapter" else ""
         fraction = slot.fraction
         finished = spine == epub.spine.lastIndex && slot.page >= slot.pages - 1
@@ -282,20 +408,37 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     }
 
     /**
-     * Stacks the WebViews and the footer, behind the Ink view until the first page is painted, so opening a
-     * book goes straight from the library to the page. They must be attached and visible to lay out at all.
+     * Stacks the WebViews and the footer behind the Ink view, where they stay while no book is open and until
+     * an opening book's first page is painted. They must be attached and visible to lay out at all.
      */
-    private fun createPage() {
-        val container = FrameLayout(activity)
+    private fun ensurePage() {
+        if (page != null) return
+        // Behind the Ink view, touches that it lets through must not turn the hidden pages.
+        val container = object : FrameLayout(activity) {
+            override fun dispatchTouchEvent(event: MotionEvent) = attached && super.dispatchTouchEvent(event)
+        }
         container.setBackgroundColor(Color.BLACK)
+        container.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         repeat(3) {
             container.addView(createWebView(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
-        slots[0].view.bringToFront()
         val bar = createFooter()
         footer = bar
         container.addView(bar)
         page = container
+        container.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(view: View) = Unit
+            override fun onViewDetachedFromWindow(view: View) {
+                ++requestGeneration
+                slots.forEach { it.view.destroy() }
+                slots.clear()
+                zip?.close()
+                zip = null
+                book = null
+                bookKey = null
+                page = null
+            }
+        })
         val content = activity.findViewById<ViewGroup>(android.R.id.content)
         content.addView(container, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
@@ -313,6 +456,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         val title = label().apply { text = options.optString("title") }
+        titleView = title
         val left = label().apply { fontFeatureSettings = "tnum" }
         timeLeft = left
         return LinearLayout(activity).apply {
@@ -355,9 +499,10 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     }
 
     private fun injectReader(page: String): String {
-        HEAD_END.find(page)?.let { return page.replaceRange(it.range.first, it.range.first, READER_TAGS) }
-        HTML_START.find(page)?.let { return page.replaceRange(it.range.last + 1, it.range.last + 1, "<head>$READER_TAGS</head>") }
-        return READER_TAGS + page
+        val tags = READER_TAGS.replace("{styles}", styles.hashCode().toString())
+        HEAD_END.find(page)?.let { return page.replaceRange(it.range.first, it.range.first, tags) }
+        HTML_START.find(page)?.let { return page.replaceRange(it.range.last + 1, it.range.last + 1, "<head>$tags</head>") }
+        return tags + page
     }
 
     /** The reading settings, in CSS pixels from the design's device pixels. */
@@ -411,11 +556,12 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     fun ready(slot: Slot, from: Int) = activity.runOnUiThread {
         if (from != slot.generation || slot.ready) return@runOnUiThread
         slot.ready = true
+        slot.startPage = slot.page
         when {
             slot === pending -> show(slot)
             slot === current -> {
                 // The book has just opened: bring the reader above the Ink view.
-                page?.bringToFront()
+                if (attached) bringPageForward()
                 show(slot)
             }
         }
@@ -423,7 +569,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
 
     fun turn(slot: Slot, from: Int, step: Int) = activity.runOnUiThread {
         val epub = book ?: return@runOnUiThread
-        if (slot !== current || from != slot.generation) return@runOnUiThread
+        if (!attached || slot !== current || from != slot.generation) return@runOnUiThread
         val next = spine + step
         if (next in epub.spine.indices) goTo(next, if (step > 0) 0.0 else "end")
     }
@@ -534,13 +680,14 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         )
     }
 
+    /** Closes the reader, leaving the book laid out behind the Ink view to open again at once. */
     private fun close() {
-        if (slots.isEmpty()) return
+        ++requestGeneration
+        opening = false
+        if (!attached) return
         val epub = book
         emit("closed", if (epub == null) 0.0 else if (finished) 1.0 else epub.progress(spine, fraction))
-        timeLeft = null
-        footer = null
-        current = null
+        attached = false
         pending = null
         activity.onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
         keyboardDark?.stop()
@@ -548,13 +695,9 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         windowCallback?.let { activity.window.callback = it }
         windowCallback = null
         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        page?.let { (it.parent as? ViewGroup)?.removeView(it) }
-        page = null
-        slots.forEach { it.view.destroy() }
-        slots.clear()
-        zip?.close()
-        zip = null
-        book = null
+        page?.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        page?.clearFocus()
+        sendPageBack()
         Log.i(TAG, "closed at $spine $fraction")
     }
 
@@ -581,7 +724,7 @@ internal class ReaderBridge(private val reader: ReaderAdapter, private val slot:
 
 private val READER_SCRIPT_BYTES = READER_SCRIPT.toByteArray()
 private val READER_TAGS =
-    """<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/><link rel="stylesheet" type="text/css" href="/__reader/reader.css"/><script type="text/javascript" src="/__reader/reader.js"></script>"""
+    """<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/><link rel="stylesheet" type="text/css" href="/__reader/reader.css?v={styles}"/><script type="text/javascript" src="/__reader/reader.js?v=${READER_SCRIPT_BYTES.contentHashCode()}"></script>"""
 private val HEAD_END = Regex("</head\\s*>", RegexOption.IGNORE_CASE)
 private val HTML_START = Regex("<html\\b[^>]*>", RegexOption.IGNORE_CASE)
 private val CACHE_FOREVER = mapOf("Cache-Control" to "public, max-age=31536000, immutable")
