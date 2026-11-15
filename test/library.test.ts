@@ -6,7 +6,6 @@ import {
   chapterProgress,
   continueReading,
   type Library,
-  newBooks,
   readingState,
   recents,
   recordPosition,
@@ -61,16 +60,6 @@ describe("home", () => {
 });
 
 describe("library", () => {
-  test("new books are unopened books from the last week, newest first", () => {
-    const books = library(
-      book("week-old", { addedAt: now - 8 * day }),
-      book("yesterday", { addedAt: now - day }),
-      book("today", { addedAt: now - 1000 }),
-      book("opened", { addedAt: now - 1000, lastReadAt: now }),
-    );
-    expect(newBooks(books, now).map((entry) => entry.id)).toEqual(["today", "yesterday"]);
-  });
-
   test("books sort by title without a leading article", () => {
     const books = library(
       book("1", { title: "The Dispossessed" }),
@@ -84,6 +73,50 @@ describe("library", () => {
       "Piranesi",
       "A Wizard of Earthsea",
     ]);
+  });
+
+  test("recently added puts newest imports first, breaking ties by title", () => {
+    const books = library(
+      book("old", { title: "Dune", addedAt: 1, lastReadAt: 100 }),
+      book("new-z", { title: "The Three-Body Problem", addedAt: 3 }),
+      book("new-a", { title: "Dark Matter", addedAt: 3, progress: 1 }),
+      book("middle", { title: "Flowers for Algernon", addedAt: 2 }),
+    );
+    expect(allBooks(books, "recently-added").map((entry) => entry.id)).toEqual([
+      "new-a",
+      "new-z",
+      "middle",
+      "old",
+    ]);
+  });
+
+  test("author uses the displayed author names and orders their books by title", () => {
+    const books = library(
+      book("earthsea", { title: "A Wizard of Earthsea", authors: ["Ursula K. Le Guin"] }),
+      book("piranesi", { title: "Piranesi", authors: ["Susanna Clarke"] }),
+      book("dispossessed", { title: "The Dispossessed", authors: ["Ursula K. Le Guin"] }),
+      book("moby", { title: "Moby-Dick", authors: ["Herman Melville"] }),
+    );
+    expect(allBooks(books, "author").map((entry) => entry.id)).toEqual([
+      "moby",
+      "piranesi",
+      "dispossessed",
+      "earthsea",
+    ]);
+  });
+
+  test("every sort preserves all books and their saved positions", () => {
+    const books = library(
+      book("first", { position: { spine: 4, fraction: 0.7 }, progress: 0.6, lastReadAt: 5 }),
+      book("second", { addedAt: now, progress: 1 }),
+    );
+    const before = structuredClone(books);
+    for (const order of ["title", "recently-added", "author"] as const) {
+      const sorted = allBooks(books, order);
+      expect(sorted.map((entry) => entry.id).sort()).toEqual(["first", "second"]);
+      for (const entry of sorted) expect(entry).toBe(books.books[entry.id]);
+      expect(books).toEqual(before);
+    }
   });
 });
 

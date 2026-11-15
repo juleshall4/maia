@@ -19,11 +19,13 @@ body {
   column-width: calc(100vw - {gap}); column-gap: {gap}; column-fill: auto;
   background: transparent !important; color: #fff !important;
   font-family: {font} !important; font-size: {size} !important; line-height: {lineHeight} !important;
-  font-optical-sizing: auto; -webkit-hyphens: auto; hyphens: auto; -webkit-user-select: none; user-select: none;
+  font-optical-sizing: auto; -webkit-hyphens: {hyphens} !important; hyphens: {hyphens} !important;
+  -webkit-user-select: none; user-select: none;
 }
 body * {
   color: inherit !important; background-color: transparent !important; border-color: #7f7f84 !important;
   font-family: inherit !important; line-height: inherit !important;
+  -webkit-hyphens: inherit !important; hyphens: inherit !important;
 }
 img, svg, video { max-width: 100% !important; max-height: calc(100vh - {top} - {bottom}) !important; object-fit: contain; break-inside: avoid; }
 h1, h2, h3, h4, h5, h6 { break-after: avoid; line-height: 1.25 !important; }
@@ -42,6 +44,7 @@ internal const val READER_SCRIPT = """
   var pages = 1;
   var words = 0;
   var ready = false;
+  var lastLayout = "";
 
   // The body is exactly 100vw; innerWidth is rounded, which would drift a little further each page.
   function width() { return document.body.getBoundingClientRect().width; }
@@ -51,18 +54,23 @@ internal const val READER_SCRIPT = """
   function measure() {
     pages = Math.max(1, Math.ceil(document.body.scrollWidth / width() - 0.01));
     document.documentElement.style.minWidth = pages * width() + "px";
-  }
-
-  function minutesLeft() {
-    if (page >= pages - 1) return 0;
-    return Math.max(1, Math.ceil((words * (pages - page - 1)) / pages / 250));
+    var chapters = [];
+    config.chapters.forEach(function (entry) {
+      var anchor = entry.anchor && document.getElementById(entry.anchor);
+      if (!entry.anchor || anchor) chapters.push({ index: entry.index, page: anchor ? pageOf(anchor) : 0 });
+    });
+    var layout = JSON.stringify([pages, words, chapters]);
+    if (layout !== lastLayout) {
+      lastLayout = layout;
+      bridge.layout(config.generation, pages, words, JSON.stringify(chapters));
+    }
   }
 
   function show(next) {
     measure();
     page = Math.max(0, Math.min(pages - 1, next));
     window.scrollTo(page * width(), 0);
-    bridge.position(config.generation, page, pages, minutesLeft());
+    bridge.position(config.generation, page);
   }
 
   function pageOf(element) {
@@ -73,8 +81,12 @@ internal const val READER_SCRIPT = """
   function start() {
     if (ready) return;
     ready = true;
-    measure();
     words = (document.body.textContent || "").split(/\s+/).filter(Boolean).length;
+    measure();
+    if (config.paginate) {
+      bridge.ready(config.generation);
+      return;
+    }
     var target = 0;
     var anchor = config.anchor && document.getElementById(config.anchor);
     if (config.end) target = pages - 1;
@@ -150,6 +162,8 @@ internal const val READER_SCRIPT = """
   window.addEventListener("resize", function () {
     if (!ready) return;
     var fraction = page / pages;
+    measure();
+    if (config.paginate) return;
     show(Math.floor(fraction * pages + 0.001));
   });
 })();

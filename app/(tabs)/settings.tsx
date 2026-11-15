@@ -35,9 +35,15 @@ export default function Settings() {
         <Field label="Margins" href="/margins">
           {labelOf(marginSizes, current.margins)}
         </Field>
+        <Toggle
+          label="Hyphenation"
+          value={current.hyphenation}
+          onChange={(hyphenation) => void settings.update((value) => ({ ...value, hyphenation }))}
+        />
         <Field label="Page turns" href="/page-turns">
           {pageTurnsLabel(current.pageTurns)}
         </Field>
+        <Field label="Bottom-right display" href="/reader-footer" />
       </Section>
       <Section title="Keyboard">
         <Toggle

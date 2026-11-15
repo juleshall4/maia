@@ -3,7 +3,7 @@ import { type Settings, settings } from "./settings";
 
 type Choice = { [K in keyof Settings]: Settings[K] extends string ? K : never }[keyof Settings];
 
-/** Saves a reading setting as soon as an option is chosen. */
+/** Saves a setting as soon as an option is chosen. */
 export function ChoicePage<K extends Choice>({
   title,
   setting,

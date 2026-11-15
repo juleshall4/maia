@@ -34,10 +34,9 @@ export type ScannedBook = Pick<
 
 export type Library = { books: Readonly<Record<string, Book>> };
 
-export const emptyLibrary: Library = { books: {} };
+export type LibrarySort = "recently-added" | "title" | "author";
 
-/** Books sent from calibre in the last week and not opened yet. */
-const newFor = 7 * 24 * 60 * 60 * 1000;
+export const emptyLibrary: Library = { books: {} };
 
 const isFinished = (book: Book) => book.progress >= 1;
 
@@ -60,16 +59,18 @@ export function recents(library: Library, limit = 5): Book[] {
     .slice(0, limit);
 }
 
-export function newBooks(library: Library, now: number): Book[] {
-  return Object.values(library.books)
-    .filter((book) => book.lastReadAt === null && now - book.addedAt < newFor)
-    .sort((a, b) => b.addedAt - a.addedAt);
-}
-
-/** Sorts by title, ignoring a leading "The", "A" or "An". */
-export function allBooks(library: Library): Book[] {
+/** Orders the library without changing the books or their reading state. */
+export function allBooks(library: Library, order: LibrarySort = "title"): Book[] {
   const key = (book: Book) => book.title.replace(/^(the|an?)\s+/i, "");
-  return Object.values(library.books).sort((a, b) => key(a).localeCompare(key(b)));
+  return Object.values(library.books).sort((a, b) => {
+    const primary =
+      order === "recently-added"
+        ? b.addedAt - a.addedAt
+        : order === "author"
+          ? a.authors.join(", ").localeCompare(b.authors.join(", "))
+          : 0;
+    return primary || key(a).localeCompare(key(b)) || a.id.localeCompare(b.id);
+  });
 }
 
 export function byline(book: Book) {

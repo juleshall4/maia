@@ -25,6 +25,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
 import java.io.File
@@ -88,7 +89,6 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         var startPage = 0
         var page = 0
         var pages = 1
-        var minutesLeft = 0
 
         val fraction get() = if (pages <= 1) 0.0 else page.toDouble() / pages
 
@@ -101,6 +101,10 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     }
 
     private val slots = mutableListOf<Slot>()
+    /** Measures the rest of the book behind the reading slots without changing the reader's place. */
+    private var paginationSlot: Slot? = null
+    private var pagination: ReaderPagination? = null
+    private val failedPagination = mutableSetOf<Int>()
     /** The slot on top, which the reader sees. */
     private var current: Slot? = null
     /** A slot that is still loading and goes on top once it is painted. */
@@ -108,7 +112,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     /** The WebViews with the footer drawn natively over them, so it stays sharp. */
     private var page: FrameLayout? = null
     private var footer: View? = null
-    private var timeLeft: TextView? = null
+    private var progressView: TextView? = null
     private var titleView: TextView? = null
     /** Whether the reader is open. Closed, it waits behind the Ink view with its pages still laid out. */
     private var attached = false
@@ -235,9 +239,41 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         titleView?.text = request.optString("title")
         val newStyles = readerStyles()
         val turns = pageTurns?.toString()
+        if (opened != null || newStyles != styles) resetPagination()
+        failedPagination.clear()
         if (newStyles != styles || turns != loadedTurns) clearSlots()
         styles = newStyles
         loadedTurns = turns
+    }
+
+    private fun stopPagination() {
+        paginationSlot?.let {
+            it.generation = ++generations
+            it.view.stopLoading()
+            it.spine = -1
+            it.ready = false
+        }
+    }
+
+    private fun resetPagination() {
+        stopPagination()
+        pagination = book?.let { ReaderPagination(it.spine.size, it.chapters) }
+        failedPagination.clear()
+    }
+
+    private val footerMode get() = options.optJSONObject("settings")?.optString("readerFooter", "time-left") ?: "time-left"
+
+    /** Measures only the current chapter, or every file when a whole-book total is selected. */
+    private fun paginate() {
+        if (!attached || footerMode in listOf("chapter", "percentage", "none")) return
+        val top = current?.takeIf { it.ready } ?: return
+        val counts = pagination ?: return
+        val counter = paginationSlot ?: return
+        if (counter.spine >= 0 && !counter.ready) return
+        val index = counts.needed(top.spine, top.page, footerMode == "book-page-count").firstOrNull { index ->
+            !counts.contains(index) && index !in failedPagination && slots.none { it.spine == index && !it.ready }
+        } ?: return
+        load(counter, index, 0.0)
     }
 
     /** Forgets what the slots hold, so they load again with the current book and settings. */
@@ -313,7 +349,6 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         slot.ready = false
         slot.page = 0
         slot.pages = 1
-        slot.minutesLeft = 0
         slot.generation = ++generations
         Log.i(TAG, "load $index ${epub.spine[index].path} from $from")
         // The generation keeps a reload of the same file from being taken as a jump within it.
@@ -356,20 +391,47 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             holder == null
         }
         missing.zip(behind).forEach { (want, spare) -> load(spare, want.first, want.second) }
+        paginate()
     }
 
     /** Shows the slot on top's place in the footer and saves it. */
     private fun report(slot: Slot) {
         val epub = book ?: return
         if (!attached) return
-        timeLeft?.text = if (slot.minutesLeft > 0) "${slot.minutesLeft} min left in chapter" else ""
         fraction = slot.fraction
         finished = spine == epub.spine.lastIndex && slot.page >= slot.pages - 1
-        emit("progress", if (finished) 1.0 else epub.progress(spine, fraction))
+        val progress = if (finished) 1.0 else epub.progress(spine, fraction)
+        updateFooter(slot)
+        emit("progress", progress)
+        paginate()
+    }
+
+    private fun updateFooter(slot: Slot) {
+        val epub = book ?: return
+        val counts = pagination ?: return
+        val chapter = counts.chapterAt(slot.spine, slot.page)
+        val chapterPages = counts.chapterPages(slot.spine, slot.page)
+        val pending = if (counts.needed(slot.spine, slot.page, footerMode == "book-page-count").any { it in failedPagination })
+            "Page count unavailable" else "Counting pages…"
+        progressView?.text = when (footerMode) {
+            "chapter" -> when {
+                epub.chapters.isEmpty() -> "Chapter ${slot.spine + 1} of ${epub.spine.size}"
+                chapter >= 0 -> "Chapter ${chapter + 1} of ${epub.chapters.size}"
+                else -> ""
+            }
+            "pages-left" -> chapterPages?.let {
+                "${it.remaining} ${if (it.remaining == 1) "page" else "pages"} left in chapter"
+            } ?: pending
+            "page-count" -> chapterPages?.let { "Page ${it.page} of ${it.total}" } ?: pending
+            "book-page-count" -> counts.bookPages(slot.spine, slot.page)?.let { "Page ${it.page} of ${it.total}" } ?: pending
+            "percentage" -> "${if (finished) 100 else floor(epub.progress(slot.spine, slot.fraction) * 100).toInt()}%"
+            "none" -> ""
+            else -> chapterPages?.let { if (it.minutesLeft > 0) "${it.minutesLeft} min left in chapter" else "" } ?: pending
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
-    private fun createWebView(): WebView {
+    private fun createWebView(counting: Boolean = false): WebView {
         val view = WebView(activity)
         view.setBackgroundColor(Color.BLACK)
         view.isVerticalScrollBarEnabled = false
@@ -403,7 +465,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
                 return serve(request.url.path.orEmpty().removePrefix("/"))
             }
         }
-        slots.add(slot)
+        if (counting) paginationSlot = slot else slots.add(slot)
         return view
     }
 
@@ -416,9 +478,14 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         // Behind the Ink view, touches that it lets through must not turn the hidden pages.
         val container = object : FrameLayout(activity) {
             override fun dispatchTouchEvent(event: MotionEvent) = attached && super.dispatchTouchEvent(event)
+            override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+                super.onSizeChanged(w, h, oldw, oldh)
+                if (w != oldw || h != oldh) resetPagination()
+            }
         }
         container.setBackgroundColor(Color.BLACK)
         container.descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        container.addView(createWebView(counting = true), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         repeat(3) {
             container.addView(createWebView(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
@@ -432,6 +499,9 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
                 ++requestGeneration
                 slots.forEach { it.view.destroy() }
                 slots.clear()
+                paginationSlot?.view?.destroy()
+                paginationSlot = null
+                pagination = null
                 zip?.close()
                 zip = null
                 book = null
@@ -443,7 +513,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         content.addView(container, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
-    /** Book title on the left and time left in the chapter on the right, as in the design: Inter 30/36, 92 in, 64 up. */
+    /** Book title on the left and the chosen progress on the right: Inter 30/36, 92 in, 64 up. */
     private fun createFooter(): LinearLayout {
         val inter = Typeface.createFromAsset(activity.assets, "reader/Inter-Regular.otf")
         fun label() = TextView(activity).apply {
@@ -457,13 +527,13 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         }
         val title = label().apply { text = options.optString("title") }
         titleView = title
-        val left = label().apply { fontFeatureSettings = "tnum" }
-        timeLeft = left
+        val progress = label().apply { fontFeatureSettings = "tnum" }
+        progressView = progress
         return LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.BOTTOM
             addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = 46 })
-            addView(left, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM).apply {
                 setMargins(92, 0, 92, 64)
             }
@@ -518,6 +588,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             .replace("{font}", font)
             .replace("{size}", px(size))
             .replace("{lineHeight}", lineHeight.toString())
+            .replace("{hyphens}", if (settings.optBoolean("hyphenation", true)) "auto" else "none")
             .replace("{margin}", px(margin))
             .replace("{gap}", px(margin * 2))
             .replace("{top}", px(122))
@@ -533,6 +604,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
 
     fun config(slot: Slot): String {
         val from = slot.start
+        val chapters = book?.chapters.orEmpty()
         return JSONObject()
             .put("generation", slot.generation)
             .put("language", book?.language ?: JSONObject.NULL)
@@ -541,14 +613,28 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             .put("fraction", (from as? Double) ?: JSONObject.NULL)
             .put("anchor", (from as? String)?.takeIf { it != "end" } ?: JSONObject.NULL)
             .put("end", from == "end")
+            .put("paginate", slot === paginationSlot)
+            .put("chapters", JSONArray(chapters.withIndex().filter { it.value.spine == slot.spine }.map {
+                JSONObject().put("index", it.index).put("anchor", it.value.anchor ?: JSONObject.NULL)
+            }))
             .toString()
     }
 
-    fun position(slot: Slot, from: Int, page: Int, pages: Int, minutesLeft: Int) = activity.runOnUiThread {
+    fun layout(slot: Slot, from: Int, pages: Int, words: Int, chapters: String) = activity.runOnUiThread {
+        if (from != slot.generation) return@runOnUiThread
+        val entries = JSONArray(chapters)
+        val starts = (0 until entries.length()).associate {
+            val entry = entries.getJSONObject(it)
+            entry.getInt("index") to entry.getInt("page")
+        }
+        slot.pages = pages
+        pagination?.record(slot.spine, PageLayout(pages, words, starts))
+        current?.takeIf { it.ready && attached }?.let { updateFooter(it) }
+    }
+
+    fun position(slot: Slot, from: Int, page: Int) = activity.runOnUiThread {
         if (from != slot.generation) return@runOnUiThread
         slot.page = page
-        slot.pages = pages
-        slot.minutesLeft = minutesLeft
         if (slot === current && slot.ready) report(slot)
     }
 
@@ -557,6 +643,12 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         if (from != slot.generation || slot.ready) return@runOnUiThread
         slot.ready = true
         slot.startPage = slot.page
+        if (slot === paginationSlot) {
+            if (pagination?.contains(slot.spine) != true) failedPagination.add(slot.spine)
+            current?.takeIf { attached }?.let { updateFooter(it) }
+            paginate()
+            return@runOnUiThread
+        }
         when {
             slot === pending -> show(slot)
             slot === current -> {
@@ -565,6 +657,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
                 show(slot)
             }
         }
+        paginate()
     }
 
     fun turn(slot: Slot, from: Int, step: Int) = activity.runOnUiThread {
@@ -688,6 +781,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         val epub = book
         emit("closed", if (epub == null) 0.0 else if (finished) 1.0 else epub.progress(spine, fraction))
         attached = false
+        stopPagination()
         pending = null
         activity.onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
         keyboardDark?.stop()
@@ -717,7 +811,8 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
 /** The methods the reader page can call. They run on a WebView thread. */
 internal class ReaderBridge(private val reader: ReaderAdapter, private val slot: ReaderAdapter.Slot) {
     @JavascriptInterface fun config() = reader.config(slot)
-    @JavascriptInterface fun position(generation: Int, page: Int, pages: Int, minutesLeft: Int) = reader.position(slot, generation, page, pages, minutesLeft)
+    @JavascriptInterface fun layout(generation: Int, pages: Int, words: Int, chapters: String) = reader.layout(slot, generation, pages, words, chapters)
+    @JavascriptInterface fun position(generation: Int, page: Int) = reader.position(slot, generation, page)
     @JavascriptInterface fun ready(generation: Int) = reader.ready(slot, generation)
     @JavascriptInterface fun turn(generation: Int, step: Int) = reader.turn(slot, generation, step)
 }

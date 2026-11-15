@@ -1,6 +1,6 @@
 import { defineTheme, defineToggle } from "ink/theme";
 
-// Atlas's theme (~/Developer/atlas), plus two-line titles, no back arrow and the tab bar, as in electra.
+// Atlas's theme (~/Developer/atlas), plus two-line titles and electra's tab bar.
 export default defineTheme({
   fonts: { body: "./assets/fonts/Inter-Regular.otf", display: "./assets/fonts/Inter-Medium.otf" },
   colours: { background: "#000000", foreground: "#ffffff", muted: "#7f7f84" },
@@ -15,7 +15,8 @@ export default defineTheme({
     top: 21,
     bottom: 51,
     cutout: "below",
-    back: { icon: "none" },
+    back: { position: "end", icon: "arrow" },
+    iconSize: 60,
   },
   section: { uppercase: true, size: 31, gap: 48 },
   subtitle: { size: 30, tone: "muted" },
