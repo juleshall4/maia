@@ -8,13 +8,12 @@
 
 </div>
 
-maia is a personal Android e-reader for the Unihertz Titan 2 Elite, built with [Ink](https://github.com/No-Scrolling/ink). It has Home, Library and Settings tabs, with page turns on the physical keys, keyboard touchpad or screen. Books and reading progress stay on your device.
+maia is a personal Android e-reader for the Unihertz Titan 2 Elite.
 
 <p align="center">
-  <img src="assets/screenshots/library.png" height="260" alt="Library with a sort button in the top-right corner">
-  <img src="assets/screenshots/sort.png" height="260" alt="Sort by page with Recently added, Title and Author choices">
-  <img src="assets/screenshots/reading-settings.png" height="260" alt="Reading settings with the Hyphenation toggle">
-  <img src="assets/screenshots/font.png" height="260" alt="Font choices with a checkmark and a back arrow">
+  <img src="assets/screenshots/home.png" height="290" alt="Home with Continue reading and recent books">
+  <img src="assets/screenshots/library.png" height="290" alt="Library with a sort button in the top-right corner">
+  <img src="assets/screenshots/book.png" height="290" alt="A page from I Am Pilgrim in the reader">
 </p>
 
 ## Features
