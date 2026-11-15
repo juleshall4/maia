@@ -5,9 +5,9 @@ package com.vandam.ink
  * The body is laid out in columns exactly one screen wide, so page n starts n screen widths across.
  */
 internal const val READER_STYLES = """
-@font-face { font-family: "Uniread Literata"; src: url("/__reader/Literata.ttf"); font-style: normal; font-weight: 100 900; }
-@font-face { font-family: "Uniread Literata"; src: url("/__reader/Literata-Italic.ttf"); font-style: italic; font-weight: 100 900; }
-@font-face { font-family: "Uniread Inter"; src: url("/__reader/Inter-Regular.otf"); }
+@font-face { font-family: "Maia Literata"; src: url("/__reader/Literata.ttf"); font-style: normal; font-weight: 100 900; }
+@font-face { font-family: "Maia Literata"; src: url("/__reader/Literata-Italic.ttf"); font-style: italic; font-weight: 100 900; }
+@font-face { font-family: "Maia Inter"; src: url("/__reader/Inter-Regular.otf"); }
 html {
   margin: 0 !important; padding: 0 !important; height: 100vh !important; overflow: hidden !important;
   background: #000 !important; -webkit-text-size-adjust: none;
@@ -33,7 +33,7 @@ a { text-decoration: none !important; }
 /** Runs in every page of a book: lays out the pages, turns them, and reports the position. */
 internal const val READER_SCRIPT = """
 (function () {
-  var bridge = window.UnireadReader;
+  var bridge = window.MaiaReader;
   if (!bridge) return;
   var config = JSON.parse(bridge.config());
   var page = 0;
@@ -94,7 +94,7 @@ internal const val READER_SCRIPT = """
     else bridge.turn(config.generation, -1);
   }
 
-  window.uniread = { next: next, previous: previous };
+  window.maia = { next: next, previous: previous };
 
   // Hyphenation needs the language; chapter files often leave it to the package.
   if (config.language && !document.documentElement.getAttribute("lang")) {
@@ -116,7 +116,7 @@ internal const val READER_SCRIPT = """
       var dx = touch.clientX - touchStart.x;
       var dy = touch.clientY - touchStart.y;
       touchStart = null;
-      if (!config.taps || Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      if (!config.swipes || Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
       swiped = true;
       if (dx < 0) next();
       else previous();

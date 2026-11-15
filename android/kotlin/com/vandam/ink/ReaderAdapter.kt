@@ -27,13 +27,16 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.zip.ZipFile
 
-private const val TAG = "uniread"
-private const val HOST = "book.uniread"
+internal const val TAG = "maia"
+private const val HOST = "book.maia"
 private const val BASE = "https://$HOST/"
 /** The Titan keyboard's touch surface, as Android names its input device. */
 private const val KEYBOARD_TOUCHPAD = "touchPad"
-/** How far a keyboard swipe must travel to turn a page, in touchpad units (the pad is 1080 wide). */
-private const val SWIPE_DISTANCE = 150f
+/** How far a keyboard swipe must travel to turn a page, in key widths across: the same as Atlas's emoji pages. */
+private const val SWIPE_KEYS = .45f
+/** The keyboard is ten keys across and four rows down. */
+private const val KEYS_ACROSS = 10f
+private const val KEY_ROWS = 4f
 /** One swipe can arrive as motion and as keys; turns closer together than this are the same swipe. */
 private const val SWIPE_GAP_MS = 400L
 
@@ -55,7 +58,7 @@ internal class BooksAdapter(private val activity: MainActivity) : NativeAdapter 
     override fun cancel(requestId: Long) = Unit
 }
 
-/** Books live in Android/data/dev.uniread/files/books, where adb and calibre can put them. */
+/** Books live in Android/data/dev.maia/files/books, where adb and calibre can put them. */
 internal fun booksFolder(activity: MainActivity) = File(activity.getExternalFilesDir(null), "books").apply { mkdirs() }
 
 /**
@@ -79,6 +82,9 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     /** Where to start in the file being loaded: a fraction, an anchor, or "end". */
     private var start: Any = 0.0
     private val backCallback = OnBackInvokedCallback { close() }
+
+    /** Holds the keyboard light off while reading, if Settings asks for that. */
+    private var keyboardDark: KeyboardDark? = null
 
     override fun execute(requestId: Long, operation: String, payload: String, complete: NativeResultHandler) {
         activity.runOnUiThread {
@@ -150,7 +156,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             loadWithOverviewMode = false
             setSupportZoom(false)
         }
-        view.addJavascriptInterface(ReaderBridge(this), "UnireadReader")
+        view.addJavascriptInterface(ReaderBridge(this), "MaiaReader")
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url
@@ -240,7 +246,7 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         val size = when (settings.optString("textSize")) { "small" -> 36; "large" -> 50; else -> 42 }
         val lineHeight = when (settings.optString("lineSpacing")) { "tight" -> 1.4; "loose" -> 1.8; else -> 1.57 }
         val margin = when (settings.optString("margins")) { "normal" -> 128; "wide" -> 168; else -> 92 }
-        val font = if (settings.optString("font") == "inter") "\"Uniread Inter\", sans-serif" else "\"Uniread Literata\", serif"
+        val font = if (settings.optString("font") == "inter") "\"Maia Inter\", sans-serif" else "\"Maia Literata\", serif"
         return READER_STYLES
             .replace("{font}", font)
             .replace("{size}", px(size))
@@ -248,8 +254,13 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             .replace("{margin}", px(margin))
             .replace("{gap}", px(margin * 2))
             .replace("{top}", px(122))
-            .replace("{bottom}", px(172))
+            .replace("{bottom}", px(128))
     }
+
+    private val pageTurns get() = options.optJSONObject("settings")?.optJSONObject("pageTurns")
+    private val keys get() = pageTurns?.optBoolean("keys", true) ?: true
+    private val taps get() = pageTurns?.optBoolean("taps", true) ?: true
+    private val swipes get() = pageTurns?.optBoolean("swipes", true) ?: true
 
     // Called from ReaderBridge on the WebView's JavaScript thread.
 
@@ -258,7 +269,8 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         return JSONObject()
             .put("generation", generation)
             .put("language", book?.language ?: JSONObject.NULL)
-            .put("taps", options.optJSONObject("settings")?.optString("pageTurns") != "keys")
+            .put("taps", taps)
+            .put("swipes", swipes)
             .put("fraction", (from as? Double) ?: JSONObject.NULL)
             .put("anchor", (from as? String)?.takeIf { it != "end" } ?: JSONObject.NULL)
             .put("end", from == "end")
@@ -293,6 +305,9 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         activity.onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_OVERLAY, backCallback)
+        if (options.optJSONObject("settings")?.optBoolean("keyboardLight", true) == false) {
+            keyboardDark = KeyboardDark(activity) { close() }.also { it.start() }
+        }
     }
 
     private var swipeStart: Pair<Float, Float>? = null
@@ -318,9 +333,10 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             MotionEvent.ACTION_UP -> {
                 val (x, y) = swipeStart ?: return true
                 swipeStart = null
-                val dx = event.x - x
-                val dy = event.y - y
-                if (kotlin.math.abs(dx) >= SWIPE_DISTANCE && kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.5f) {
+                // Measured as Atlas does: keys across and rows down, and a swipe that goes further down than across is not sideways.
+                val dx = (event.x - x) / padSize(event, MotionEvent.AXIS_X) * KEYS_ACROSS
+                val dy = (event.y - y) / padSize(event, MotionEvent.AXIS_Y) * KEY_ROWS
+                if (kotlin.math.abs(dx) >= SWIPE_KEYS && kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
                     swipe(if (dx < 0) "next" else "previous")
                 }
             }
@@ -330,10 +346,11 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
     }
 
     private fun swipe(command: String) {
+        if (!swipes) return
         val now = android.os.SystemClock.uptimeMillis()
         if (now - lastSwipe < SWIPE_GAP_MS) return
         lastSwipe = now
-        webView?.evaluateJavascript("window.uniread && window.uniread.$command()", null)
+        webView?.evaluateJavascript("window.maia && window.maia.$command()", null)
     }
 
     /** Arrow keys the firmware sends for a keyboard swipe, in the direction the finger moved. */
@@ -345,10 +362,14 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         return true
     }
 
+    private fun padSize(event: MotionEvent, axis: Int) =
+        event.device?.getMotionRange(axis, event.source)?.range?.takeIf { it > 0 } ?: if (axis == MotionEvent.AXIS_X) 1079f else 599f
+
     private fun isKeyboard(event: MotionEvent) =
         event.isFromSource(InputDevice.SOURCE_TOUCHPAD) || event.device?.name == KEYBOARD_TOUCHPAD
 
     private fun onKey(event: KeyEvent): Boolean {
+        keyboardDark?.keyPressed(event)
         if (event.device?.name == KEYBOARD_TOUCHPAD) return onSwipeKey(event)
         val command = when (event.keyCode) {
             KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN,
@@ -364,13 +385,13 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
             if (event.action == KeyEvent.ACTION_UP) close()
             return true
         }
-        if (event.action == KeyEvent.ACTION_DOWN) webView?.evaluateJavascript("window.uniread && window.uniread.$command()", null)
+        if (keys && event.action == KeyEvent.ACTION_DOWN) webView?.evaluateJavascript("window.maia && window.maia.$command()", null)
         return true
     }
 
     private fun emit(event: String, progress: Double) {
         activity.emit(
-            JSONObject().put("type", "uniread.reader").put("event", event)
+            JSONObject().put("type", "maia.reader").put("event", event)
                 .put("spine", spine).put("fraction", fraction).put("progress", progress).toString(),
         )
     }
@@ -382,6 +403,8 @@ internal class ReaderAdapter(private val activity: MainActivity) : NativeAdapter
         webView = null
         timeLeft = null
         activity.onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
+        keyboardDark?.stop()
+        keyboardDark = null
         windowCallback?.let { activity.window.callback = it }
         windowCallback = null
         activity.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

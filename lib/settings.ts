@@ -20,10 +20,22 @@ export const marginSizes = [
   { value: "normal", label: "Normal" },
   { value: "wide", label: "Wide" },
 ] as const;
-export const pageTurnModes = [
-  { value: "keys-and-taps", label: "Keys and taps" },
-  { value: "keys", label: "Keys only" },
+/** The ways a page can turn; each can be on or off, but not all off. */
+export const pageTurnWays = [
+  { value: "keys", label: "Keys" },
+  { value: "taps", label: "Taps" },
+  { value: "swipes", label: "Swipes" },
 ] as const;
+
+export type PageTurnWay = (typeof pageTurnWays)[number]["value"];
+export type PageTurns = Record<PageTurnWay, boolean>;
+
+/** "Keys, taps, swipes" */
+export const pageTurnsLabel = (turns: PageTurns) => {
+  const words = pageTurnWays.filter((way) => turns[way.value]).map((way) => way.value);
+  const text = words.join(", ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
 
 type Value<T extends readonly { value: string }[]> = T[number]["value"];
 
@@ -32,11 +44,11 @@ export type Settings = {
   textSize: Value<typeof textSizes>;
   lineSpacing: Value<typeof lineSpacings>;
   margins: Value<typeof marginSizes>;
-  pageTurns: Value<typeof pageTurnModes>;
+  pageTurns: PageTurns;
   connectAutomatically: boolean;
   sendProgress: boolean;
   shelvesFromTags: boolean;
-  /** Off keeps the keyboard light off while uniread is open, and until the screen next turns on. */
+  /** Off keeps the keyboard light off while a book is open. */
   keyboardLight: boolean;
 };
 
@@ -44,38 +56,58 @@ const values = <T extends readonly { value: string }[]>(options: T) =>
   // SAFETY: every options list above is a non-empty const tuple, so its values are a non-empty list of its value literals.
   v.picklist(options.map((option) => option.value) as [Value<T>, ...Value<T>[]]);
 
+/** Page turns before swipes had their own setting: keyboard swipes always turned pages, screen swipes went with taps. */
+const oldPageTurns = v.picklist(["keys-and-taps", "keys"]);
+
 /** The settings saved before the keyboard light setting. */
 const version1 = v.object({
   font: values(fonts),
   textSize: values(textSizes),
   lineSpacing: values(lineSpacings),
   margins: values(marginSizes),
-  pageTurns: values(pageTurnModes),
+  pageTurns: oldPageTurns,
   connectAutomatically: v.boolean(),
   sendProgress: v.boolean(),
   shelvesFromTags: v.boolean(),
 });
 
+const version2 = v.object({ ...version1.entries, keyboardLight: v.boolean() });
+
 export const settings = createStore<Settings>({
-  key: "uniread.settings",
-  version: 2,
-  // Version 2 added the keyboard light setting.
+  key: "maia.settings",
+  version: 3,
+  // Version 2 added the keyboard light setting, and version 3 turned page turns into keys, taps and swipes, each on or off.
   migrate: (old, oldVersion) => {
-    if (oldVersion === 1) return { ...v.parse(version1, old), keyboardLight: true };
-    throw new Error("Unsupported settings version");
+    const saved =
+      oldVersion === 1
+        ? { ...v.parse(version1, old), keyboardLight: true }
+        : oldVersion === 2
+          ? v.parse(version2, old)
+          : null;
+    if (!saved) throw new Error("Unsupported settings version");
+    return {
+      ...saved,
+      // Keyboard swipes always turned pages before; Keys only turned off taps and screen swipes.
+      pageTurns: { keys: true, taps: saved.pageTurns !== "keys", swipes: true },
+    };
   },
   initial: {
     font: "literata",
     textSize: "medium",
     lineSpacing: "normal",
     margins: "narrow",
-    pageTurns: "keys-and-taps",
+    pageTurns: { keys: true, taps: true, swipes: true },
     connectAutomatically: true,
     sendProgress: true,
     shelvesFromTags: false,
     keyboardLight: true,
   },
-  decode: v.parser(v.object({ ...version1.entries, keyboardLight: v.boolean() })),
+  decode: v.parser(
+    v.object({
+      ...version2.entries,
+      pageTurns: v.object({ keys: v.boolean(), taps: v.boolean(), swipes: v.boolean() }),
+    }),
+  ),
 });
 
 export const labelOf = (options: readonly { value: string; label: string }[], value: string) =>

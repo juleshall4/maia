@@ -148,7 +148,7 @@ internal fun scanBooks(folder: File): JSONArray {
         try {
             ZipFile(file).use { books.put(Epub.read(it, file.nameWithoutExtension).toJson(file)) }
         } catch (error: Exception) {
-            android.util.Log.w("uniread", "skipped ${file.name}", error)
+            android.util.Log.w("maia", "skipped ${file.name}", error)
         }
     }
     return books

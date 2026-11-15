@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "dev-uniread",
+      "name": "dev-maia",
       "dependencies": {
         "@ink/store": "file:/Users/julian/Developer/ink/packages/store",
         "ink": "file:/Users/julian/Developer/ink/packages/ink",

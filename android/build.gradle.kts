@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.uniread.reader"
+    namespace = "dev.maia.reader"
     compileSdk = 36
     defaultConfig {
         minSdk = 34

@@ -24,7 +24,7 @@ const bookSchema = v.object({
 });
 
 export const library = createStore<Library>({
-  key: "uniread.library",
+  key: "maia.library",
   version: 2,
   initial: emptyLibrary,
   // Version 1 had no files to read; books come back from the books folder on the next scan.

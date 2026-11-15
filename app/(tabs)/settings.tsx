@@ -1,16 +1,18 @@
-import { Field, Screen, Section, Toggle, useSnapshot } from "ink";
+import { Button, Field, Screen, Section, Toggle, useSnapshot } from "ink";
+import { about, storageLabel } from "../../lib/about";
 import {
   fonts,
   labelOf,
   lineSpacings,
   marginSizes,
-  pageTurnModes,
+  pageTurnsLabel,
   settings,
   textSizes,
 } from "../../lib/settings";
 
 export default function Settings() {
   const snapshot = useSnapshot(settings);
+  const info = useSnapshot(about());
   if (snapshot.status !== "ready") return <Screen title="Settings" />;
   const current = snapshot.data;
   return (
@@ -34,17 +36,24 @@ export default function Settings() {
           {labelOf(marginSizes, current.margins)}
         </Field>
         <Field label="Page turns" href="/page-turns">
-          {labelOf(pageTurnModes, current.pageTurns)}
+          {pageTurnsLabel(current.pageTurns)}
         </Field>
       </Section>
       <Section title="Keyboard">
         <Toggle
-          label="Keyboard light"
+          label="Backlight when reading"
           value={current.keyboardLight}
           onChange={(keyboardLight) =>
             void settings.update((value) => ({ ...value, keyboardLight }))
           }
         />
+      </Section>
+      <Section title="About">
+        <Field label="Storage">
+          {info.status === "ready" ? storageLabel(info.data.books, info.data.bytes) : ""}
+        </Field>
+        <Field label="Version">{info.status === "ready" ? info.data.version : ""}</Field>
+        <Button href="/credits">Credits</Button>
       </Section>
     </Screen>
   );
